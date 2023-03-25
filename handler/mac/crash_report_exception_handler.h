@@ -24,6 +24,7 @@
 #include "handler/crash_report_upload_thread.h"
 #include "handler/user_stream_data_source.h"
 #include "util/mach/exc_server_variants.h"
+#include "util/file/file_helper.h"
 
 namespace crashpad {
 
