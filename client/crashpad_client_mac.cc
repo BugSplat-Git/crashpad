@@ -452,9 +452,13 @@ bool CrashpadClient::StartHandler(
     bool restartable,
     bool asynchronous_start,
     const std::vector<base::FilePath>& attachments) {
-  // Attachments are not implemented on MacOS yet.
-  DCHECK(attachments.empty());
-
+  
+  // Append attachments to arguments
+  std::vector<std::string> args_with_attachments = arguments;
+  for(const auto& arg : attachments) {
+      args_with_attachments.push_back("--attachment=" + arg.value());
+  }
+    
   // The “restartable” behavior can only be selected on OS X 10.10 and later. In
   // previous OS versions, if the initial client were to crash while attempting
   // to restart the handler, it would become an unkillable process.
@@ -464,7 +468,7 @@ bool CrashpadClient::StartHandler(
       metrics_dir,
       url,
       annotations,
-      arguments,
+      args_with_attachments,
       restartable && (__MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_10_10 ||
                       MacOSVersionNumber() >= 10'10'00)));
   if (!exception_port.is_valid()) {

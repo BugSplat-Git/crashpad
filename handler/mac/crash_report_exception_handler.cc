@@ -46,10 +46,12 @@ CrashReportExceptionHandler::CrashReportExceptionHandler(
     CrashReportDatabase* database,
     CrashReportUploadThread* upload_thread,
     const std::map<std::string, std::string>* process_annotations,
+    const std::vector<base::FilePath>* attachments,
     const UserStreamDataSources* user_stream_data_sources)
     : database_(database),
       upload_thread_(upload_thread),
       process_annotations_(process_annotations),
+      attachments_(attachments),
       user_stream_data_sources_(user_stream_data_sources) {}
 
 CrashReportExceptionHandler::~CrashReportExceptionHandler() {
@@ -174,6 +176,23 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
       return KERN_FAILURE;
     }
 
+    for (const auto& attachment : (*attachments_)) {
+      FileReader file_reader;
+      if (!file_reader.Open(attachment)) {
+        LOG(ERROR) << "failed to open attachment " << attachment.value().c_str();
+        continue;
+      }
+
+      base::FilePath filename = attachment.BaseName();
+      FileWriter* file_writer = new_report->AddAttachment(filename.value());
+      if (file_writer == nullptr) {
+        LOG(ERROR) << "failed to create attachment " << filename.value().c_str();
+        continue;
+      }
+
+      CopyFileContent(&file_reader, file_writer);
+    }
+      
     UUID uuid;
     database_status =
         database_->FinishedWritingCrashReport(std::move(new_report), &uuid);
