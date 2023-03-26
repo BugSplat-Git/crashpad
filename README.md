@@ -16,7 +16,7 @@ limitations under the License.
 
 # Crashpad
 
-[Crashpad](https://crashpad.chromium.org/) is a crash-reporting system.
+[Crashpad](https://crashpad.chromium.org/) is a crash-reporting system.  The BugSplat fork adds support for attachments on Mac.
 
 ## Documentation
 
