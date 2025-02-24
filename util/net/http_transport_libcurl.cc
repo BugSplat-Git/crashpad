@@ -345,6 +345,8 @@ HTTPTransportLibcurl::HTTPTransportLibcurl() : HTTPTransport() {}
 HTTPTransportLibcurl::~HTTPTransportLibcurl() {}
 
 bool HTTPTransportLibcurl::ExecuteSynchronously(std::string* response_body) {
+  LOG(ERROR) << "BUGSPLAT: executing sync http transport";
+  
   DCHECK(body_stream());
 
   response_body->clear();
@@ -358,6 +360,8 @@ bool HTTPTransportLibcurl::ExecuteSynchronously(std::string* response_body) {
     LOG(ERROR) << CurlErrorMessage(curl_global_init_err, "curl_global_init");
     return false;
   }
+
+  LOG(ERROR) << "BUGSPLAT: curl_global_init";
 
   CurlSList curl_headers;
   ScopedCURL curl(Libcurl::CurlEasyInit());
@@ -422,6 +426,8 @@ bool HTTPTransportLibcurl::ExecuteSynchronously(std::string* response_body) {
   }
 
   if (method() == "POST") {
+    LOG(ERROR) << "BUGSPLAT: method: POST";
+    
     TRY_CURL_EASY_SETOPT(curl.get(), CURLOPT_POST, 1l);
 
     // By default when sending a POST request, libcurl includes an “Expect:
@@ -477,11 +483,13 @@ bool HTTPTransportLibcurl::ExecuteSynchronously(std::string* response_body) {
   curl_err =
       Libcurl::CurlEasyGetInfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
   if (curl_err != CURLE_OK) {
+    LOG(ERROR) << "BUGSPLAT: curl_easy_getinfo";
     LOG(ERROR) << CurlErrorMessage(curl_err, "curl_easy_getinfo");
     return false;
   }
 
   if (status != 200) {
+    LOG(ERROR) << "BUGSPLAT: status: " << status;
     LOG(ERROR) << base::StringPrintf("HTTP status %ld", status);
     return false;
   }

@@ -338,6 +338,8 @@ bool WriteRequest(Stream* stream,
                   HTTPBodyStream* body_stream) {
   std::string request_line = base::StringPrintf(
       "%s %s HTTP/1.0\r\n", method.c_str(), resource.c_str());
+
+  LOG(ERROR) << "BUGSPLAT: request_line: " << request_line;
   if (!stream->LoggingWrite(request_line.data(), request_line.size()))
     return false;
 
@@ -355,6 +357,8 @@ bool WriteRequest(Stream* stream,
     if (!stream->LoggingWrite(header_str.data(), header_str.size()))
       return false;
   }
+
+  LOG(ERROR) << "BUGSPLAT: chunked: " << chunked;
 
   // If no Content-Length, then encode as chunked, so add that header too.
   if (chunked) {
@@ -551,6 +555,8 @@ bool HTTPTransportSocket::ExecuteSynchronously(std::string* response_body) {
   if (!CrackURL(url(), &scheme, &hostname, &port, &resource)) {
     return false;
   }
+
+  LOG(ERROR) << "BUGSPLAT: scheme: " << scheme << " hostname: " << hostname;
 
 #if !defined(CRASHPAD_USE_BORINGSSL)
   CHECK(scheme == "http") << "Got " << scheme << " for scheme in '" << url()

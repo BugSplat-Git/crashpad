@@ -194,9 +194,13 @@ void CrashReportUploadThread::ProcessPendingReport(
 
   Settings* const settings = database_->GetSettings();
 
+  // TODO BG logging for debugging
+  LOG(ERROR) << "BUGSPLAT: about to upload report";
+
   bool uploads_enabled;
   if (!report.upload_explicitly_requested &&
       (!settings->GetUploadsEnabled(&uploads_enabled) || !uploads_enabled)) {
+    LOG(ERROR) << "BUGSPLAT: uploads disabled";
     // Don’t attempt an upload if there’s no URL to upload to. Allow upload if
     // it has been explicitly requested by the user, otherwise, respect the
     // upload-enabled state stored in the database’s settings.
@@ -205,8 +209,10 @@ void CrashReportUploadThread::ProcessPendingReport(
     return;
   }
 
-  if (ShouldRateLimitUpload(report))
+  if (ShouldRateLimitUpload(report)) {
+    LOG(ERROR) << "BUGSPLAT: rate limit hit";
     return;
+  }
 
 #if BUILDFLAG(IS_IOS)
   if (ShouldRateLimitRetry(report))
@@ -216,8 +222,11 @@ void CrashReportUploadThread::ProcessPendingReport(
   std::unique_ptr<const CrashReportDatabase::UploadReport> upload_report;
   CrashReportDatabase::OperationStatus status =
       database_->GetReportForUploading(report.uuid, &upload_report);
+  LOG(ERROR) << "BUGSPLAT: got report for uploading";
+
   switch (status) {
     case CrashReportDatabase::kNoError:
+      LOG(ERROR) << "BUGSPLAT: no error";
       break;
 
     case CrashReportDatabase::kBusyError:
@@ -225,33 +234,40 @@ void CrashReportUploadThread::ProcessPendingReport(
       // Someone else may have gotten to it first. If they’re working on it now,
       // this will be kBusyError. If they’ve already finished with it, it’ll be
       // kReportNotFound.
+      LOG(ERROR) << "BUGSPLAT: busy error";
       return;
 
     case CrashReportDatabase::kFileSystemError:
     case CrashReportDatabase::kDatabaseError:
       // In these cases, SkipReportUpload() might not work either, but it’s best
       // to at least try to get the report out of the way.
+      LOG(ERROR) << "BUGSPLAT: database error";
       database_->SkipReportUpload(report.uuid,
                                   Metrics::CrashSkippedReason::kDatabaseError);
       return;
 
     case CrashReportDatabase::kCannotRequestUpload:
+      LOG(ERROR) << "BUGSPLAT: cannot request upload";
       NOTREACHED();
   }
 
   std::string response_body;
   UploadResult upload_result =
       UploadReport(upload_report.get(), &response_body);
+  //LOG(ERROR) << "BUGSPLAT: upload result: " << upload_result;
   switch (upload_result) {
     case UploadResult::kSuccess:
+      LOG(ERROR) << "BUGSPLAT: success";
       database_->RecordUploadComplete(std::move(upload_report), response_body);
       break;
     case UploadResult::kPermanentFailure:
+      LOG(ERROR) << "BUGSPLAT: permanent failure";
       upload_report.reset();
       database_->SkipReportUpload(
           report.uuid, Metrics::CrashSkippedReason::kPrepareForUploadFailed);
       break;
     case UploadResult::kRetry:
+      LOG(ERROR) << "BUGSPLAT: retry";
 #if BUILDFLAG(IS_IOS)
       if (upload_report->upload_attempts > kRetryAttempts) {
         upload_report.reset();
@@ -265,6 +281,7 @@ void CrashReportUploadThread::ProcessPendingReport(
             (1 << upload_report->upload_attempts) * kRetryWorkIntervalSeconds;
       }
 #else
+      LOG(ERROR) << "BUGSPLAT: skipping report upload";
       upload_report.reset();
 
       // TODO(mark): Deal with retries properly: don’t call SkipReportUplaod()
@@ -280,6 +297,9 @@ void CrashReportUploadThread::ProcessPendingReport(
 CrashReportUploadThread::UploadResult CrashReportUploadThread::UploadReport(
     const CrashReportDatabase::UploadReport* report,
     std::string* response_body) {
+
+  LOG(ERROR) << "BUGSPLAT: uploading report";
+
   std::map<std::string, std::string> parameters;
 
   FileReader* reader = report->Reader();
@@ -363,8 +383,10 @@ CrashReportUploadThread::UploadResult CrashReportUploadThread::UploadReport(
       }
     }
   }
+  LOG(ERROR) << "BUGSPLAT: url: " << url;
   http_transport->SetURL(url);
 
+  LOG(ERROR) << "BUGSPLAT: executing sync http transport";
   if (!http_transport->ExecuteSynchronously(response_body)) {
     return UploadResult::kRetry;
   }
