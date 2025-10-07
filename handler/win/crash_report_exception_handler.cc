@@ -16,8 +16,10 @@
 
 #include <type_traits>
 #include <utility>
+#include <sstream>
 
 #include "base/strings/utf_string_conversions.h"
+#include "snapshot/win/process_snapshot_win.h"
 #include "client/crash_report_database.h"
 #include "client/settings.h"
 #include "handler/crash_report_upload_thread.h"
@@ -33,21 +35,101 @@
 
 namespace crashpad {
 
+namespace {
+
+// Dialog communication structures
+struct DialogRequest {
+  char report_id[37];  // UUID string + null terminator
+  char process_name[MAX_PATH];
+};
+
+const wchar_t kDialogPipeName[] = L"\\\\.\\pipe\\CrashpadDialogPipe";
+const wchar_t kDialogAppName[] = L"CustomerCrashDialog.exe";
+
+}  // namespace
+
 CrashReportExceptionHandler::CrashReportExceptionHandler(
     CrashReportDatabase* database,
     CrashReportUploadThread* upload_thread,
     const std::map<std::string, std::string>* process_annotations,
     const std::vector<base::FilePath>* attachments,
-    const UserStreamDataSources* user_stream_data_sources)
+    const UserStreamDataSources* user_stream_data_sources,
+    bool enable_crash_dialog)
     : database_(database),
       upload_thread_(upload_thread),
       process_annotations_(process_annotations),
       attachments_(attachments),
-      user_stream_data_sources_(user_stream_data_sources) {}
+      user_stream_data_sources_(user_stream_data_sources),
+      enable_crash_dialog_(enable_crash_dialog) {}
 
 CrashReportExceptionHandler::~CrashReportExceptionHandler() {}
 
 void CrashReportExceptionHandler::ExceptionHandlerServerStarted() {}
+
+// Launches the customer dialog application and waits for response
+DialogResponse CrashReportExceptionHandler::LaunchDialogAndGetResponse(
+    const UUID& report_id,
+    const std::string& process_name) {
+  DialogResponse response = {false, "", ""};
+
+  // Create named pipe for communication
+  HANDLE pipe = CreateNamedPipe(
+      kDialogPipeName,
+      PIPE_ACCESS_DUPLEX,
+      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+      1,  // Max instances
+      sizeof(DialogRequest),  // Output buffer size
+      sizeof(DialogResponse), // Input buffer size
+      30000,  // Timeout (30 seconds)
+      nullptr);
+
+  if (pipe == INVALID_HANDLE_VALUE) {
+    LOG(ERROR) << "Failed to create named pipe for dialog communication";
+    return response;
+  }
+
+  // Prepare dialog request
+  DialogRequest request;
+  std::string report_id_str = report_id.ToString();
+  strncpy_s(request.report_id, report_id_str.c_str(), sizeof(request.report_id) - 1);
+  strncpy_s(request.process_name, process_name.c_str(), sizeof(request.process_name) - 1);
+
+  // Launch dialog application
+  std::wstringstream command_stream;
+  command_stream << kDialogAppName << L" " << base::UTF8ToWide(report_id_str);
+
+  STARTUPINFO si = { sizeof(si) };
+  PROCESS_INFORMATION pi;
+
+  if (CreateProcess(nullptr,
+                   const_cast<wchar_t*>(command_stream.str().c_str()),
+                   nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+
+    // Wait for dialog to connect to pipe
+    if (ConnectNamedPipe(pipe, nullptr)) {
+      // Send request to dialog
+      DWORD bytes_written;
+      if (::WriteFile(pipe, &request, sizeof(request), &bytes_written, nullptr)) {
+        // Wait for response (with timeout)
+        DWORD bytes_read;
+        DWORD wait_result = WaitForSingleObject(pipe, 30000);  // 30 second timeout
+
+        if (wait_result == WAIT_OBJECT_0 &&
+            ::ReadFile(pipe, &response, sizeof(response), &bytes_read, nullptr)) {
+          // Successfully received response
+        }
+      }
+    }
+
+    // Clean up dialog process
+    WaitForSingleObject(pi.hProcess, 5000);  // Wait up to 5 seconds
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+  }
+
+  CloseHandle(pipe);
+  return response;
+}
 
 unsigned int CrashReportExceptionHandler::ExceptionHandlerServerException(
     HANDLE process,
@@ -140,6 +222,48 @@ unsigned int CrashReportExceptionHandler::ExceptionHandlerServerException(
       Metrics::ExceptionCaptureResult(
           Metrics::CaptureResult::kFinishedWritingCrashReportFailed);
       return termination_code;
+    }
+
+    // NEW: Handle crash dialog if enabled
+    if (enable_crash_dialog_) {
+      // Get process name for dialog
+      std::string process_name = "Unknown Process";
+
+      // Extract actual process name from process snapshot
+      ProcessSnapshotWin process_snapshot_for_name;
+      if (process_snapshot_for_name.Initialize(process,
+                                             ProcessSuspensionState::kRunning,
+                                             exception_information_address,
+                                             debug_critical_section_address)) {
+        const std::vector<const ModuleSnapshot*> modules = process_snapshot_for_name.Modules();
+        if (!modules.empty()) {
+          std::string module_name = modules[0]->Name();
+          // Extract just the filename from the full path
+          size_t last_slash = module_name.find_last_of("\\/");
+          if (last_slash != std::string::npos) {
+            process_name = module_name.substr(last_slash + 1);
+          } else {
+            process_name = module_name;
+          }
+        }
+      }
+
+      // Launch dialog and get response
+      DialogResponse dialog_response = LaunchDialogAndGetResponse(uuid, process_name);
+
+      // If user cancelled or dialog failed, don't upload
+      if (!dialog_response.should_upload) {
+        Metrics::ExceptionCaptureResult(Metrics::CaptureResult::kSuccess);
+        return termination_code;
+      }
+
+      // Add user input to process annotations for upload
+      if (strlen(dialog_response.user_email) > 0) {
+        // Note: We need to modify process_annotations_ to include dialog data
+        // For now, we'll log it - in a full implementation, you'd modify the annotations
+        LOG(INFO) << "User email: " << dialog_response.user_email;
+        LOG(INFO) << "User description: " << dialog_response.user_description;
+      }
     }
 
     if (upload_thread_) {

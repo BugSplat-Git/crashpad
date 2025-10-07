@@ -21,6 +21,9 @@ declare_args() {
   if (defined(is_fuchsia_tree) && is_fuchsia_tree) {
     crashpad_dependencies = "fuchsia"
   }
+
+  # Enable crash dialog functionality in crashpad_handler
+  enable_crash_dialog = false
 }
 
 assert(
