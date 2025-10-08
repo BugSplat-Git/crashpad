@@ -21,12 +21,20 @@
 #include <string>
 
 #include "handler/user_stream_data_source.h"
+#include "util/misc/uuid.h"
 #include "util/win/exception_handler_server.h"
 
 namespace crashpad {
 
 class CrashReportDatabase;
 class CrashReportUploadThread;
+
+// Dialog communication structures
+struct DialogResponse {
+  bool should_upload;
+  char user_email[256];
+  char user_description[1024];
+};
 
 //! \brief An exception handler that writes crash reports for exception messages
 //!     to a CrashReportDatabase.
@@ -55,12 +63,15 @@ class CrashReportExceptionHandler final
   //!     crash reports. For each crash report that is written, the data sources
   //!     are called in turn. These data sources may contribute additional
   //!     minidump streams. `nullptr` if not required.
+  //! \param[in] enable_crash_dialog Whether to show a dialog to collect user
+  //!     information before uploading crash reports.
   CrashReportExceptionHandler(
       CrashReportDatabase* database,
       CrashReportUploadThread* upload_thread,
       const std::map<std::string, std::string>* process_annotations,
       const std::vector<base::FilePath>* attachments,
-      const UserStreamDataSources* user_stream_data_sources);
+      const UserStreamDataSources* user_stream_data_sources,
+      bool enable_crash_dialog = false);
 
   CrashReportExceptionHandler(const CrashReportExceptionHandler&) = delete;
   CrashReportExceptionHandler& operator=(const CrashReportExceptionHandler&) =
@@ -78,12 +89,21 @@ class CrashReportExceptionHandler final
       WinVMAddress exception_information_address,
       WinVMAddress debug_critical_section_address) override;
 
+  //! \brief Launches the customer dialog application and waits for response.
+  //! \param[in] report_id The UUID of the crash report.
+  //! \param[in] process_name The name of the crashed process.
+  //! \return The dialog response containing user input and upload decision.
+  DialogResponse LaunchDialogAndGetResponse(
+      const UUID& report_id,
+      const std::string& process_name);
+
  private:
   CrashReportDatabase* database_;  // weak
   CrashReportUploadThread* upload_thread_;  // weak
   const std::map<std::string, std::string>* process_annotations_;  // weak
   const std::vector<base::FilePath>* attachments_;  // weak
   const UserStreamDataSources* user_stream_data_sources_;  // weak
+  const bool enable_crash_dialog_;
 };
 
 }  // namespace crashpad

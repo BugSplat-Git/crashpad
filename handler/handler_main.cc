@@ -212,6 +212,8 @@ void Usage(const base::FilePath& me) {
   // clang-format on
 #endif  // BUILDFLAG(IS_ANDROID)
       // clang-format off
+"      --enable-crash-dialog   show dialog to collect user information\n"
+"                              before uploading crash reports\n"
 "      --help                  display this help and exit\n"
 "      --version               output version information and exit\n",
           me.value().c_str());
@@ -256,6 +258,7 @@ struct Options {
 #if defined(ATTACHMENTS_SUPPORTED)
   std::vector<base::FilePath> attachments;
 #endif  // ATTACHMENTS_SUPPORTED
+  bool enable_crash_dialog = false;
 };
 
 // Splits |key_value| on '=' and inserts the resulting key and value into |map|.
@@ -630,6 +633,7 @@ int HandlerMain(int argc,
 #if BUILDFLAG(IS_ANDROID)
     kOptionWriteMinidumpToLog,
 #endif  // BUILDFLAG(IS_ANDROID)
+    kOptionEnableCrashDialog,
 
     // Standard options.
     kOptionHelp = -2,
@@ -720,6 +724,7 @@ int HandlerMain(int argc,
 #if BUILDFLAG(IS_ANDROID)
     {"write-minidump-to-log", no_argument, nullptr, kOptionWriteMinidumpToLog},
 #endif  // BUILDFLAG(IS_ANDROID)
+    {"enable-crash-dialog", no_argument, nullptr, kOptionEnableCrashDialog},
     {"help", no_argument, nullptr, kOptionHelp},
     {"version", no_argument, nullptr, kOptionVersion},
     {nullptr, 0, nullptr, 0},
@@ -900,6 +905,10 @@ int HandlerMain(int argc,
         break;
       }
 #endif  // BUILDFLAG(IS_ANDROID)
+      case kOptionEnableCrashDialog: {
+        options.enable_crash_dialog = true;
+        break;
+      }
       case kOptionHelp: {
         Usage(me);
         MetricsRecordExit(Metrics::LifetimeMilestone::kExitedEarly);
@@ -1064,9 +1073,8 @@ int HandlerMain(int argc,
         static_cast<CrashReportUploadThread*>(upload_thread.Get()),
         &options.annotations,
         &options.attachments,
-        true,
-        false,
-        user_stream_sources);
+        user_stream_sources,
+        options.enable_crash_dialog);
   }
 #else
   exception_handler = std::make_unique<CrashReportExceptionHandler>(
@@ -1084,7 +1092,8 @@ int HandlerMain(int argc,
       true,
       false,
 #endif  // BUILDFLAG(IS_LINUX)
-      user_stream_sources);
+      user_stream_sources,
+      options.enable_crash_dialog);
 #endif  // BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
