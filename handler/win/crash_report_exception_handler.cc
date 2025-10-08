@@ -195,6 +195,70 @@ unsigned int CrashReportExceptionHandler::ExceptionHandlerServerException(
 
     process_snapshot.SetReportID(new_report->ReportID());
 
+    // Handle crash dialog BEFORE writing minidump
+    // This allows us to add user input as annotations before writing
+    if (enable_crash_dialog_) {
+      // Get the report ID (we need it for the dialog)
+      UUID report_id = new_report->ReportID();
+      
+      // Get process name for dialog
+      std::string process_name = "Unknown Process";
+
+      // Extract actual process name from process snapshot
+      ProcessSnapshotWin process_snapshot_for_name;
+      if (process_snapshot_for_name.Initialize(process,
+                                             ProcessSuspensionState::kRunning,
+                                             exception_information_address,
+                                             debug_critical_section_address)) {
+        const std::vector<const ModuleSnapshot*> modules = process_snapshot_for_name.Modules();
+        if (!modules.empty()) {
+          std::string module_name = modules[0]->Name();
+          // Extract just the filename from the full path
+          size_t last_slash = module_name.find_last_of("\\/");
+          if (last_slash != std::string::npos) {
+            process_name = module_name.substr(last_slash + 1);
+          } else {
+            process_name = module_name;
+          }
+        }
+      }
+
+      // Launch dialog and get response BEFORE writing the minidump
+      DialogResponse dialog_response = LaunchDialogAndGetResponse(report_id, process_name);
+
+      // If user cancelled or dialog failed, don't continue
+      if (!dialog_response.should_upload) {
+        LOG(INFO) << "User declined crash report upload";
+        
+        // Don't call FinishedWritingCrashReport - the report will be cleaned up automatically
+        // when new_report goes out of scope
+        Metrics::ExceptionCaptureResult(Metrics::CaptureResult::kSuccess);
+        return termination_code;
+      }
+
+      // User approved - add their input as annotations
+      LOG(INFO) << "User approved crash report upload";
+      
+      // Combine user input with existing annotations
+      std::map<std::string, std::string> combined_annotations = *process_annotations_;
+      
+      // Add user email if provided
+      if (strlen(dialog_response.user_email) > 0) {
+        combined_annotations["email"] = dialog_response.user_email;
+        LOG(INFO) << "Added user email to crash report";
+      }
+      
+      // Add user description if provided
+      if (strlen(dialog_response.user_description) > 0) {
+        combined_annotations["list_annotations"] = dialog_response.user_description;
+        LOG(INFO) << "Added user description to crash report";
+      }
+      
+      // Update process snapshot with combined annotations
+      process_snapshot.SetAnnotationsSimpleMap(combined_annotations);
+    }
+
+    // Now write the minidump with all annotations (including user input if provided)
     MinidumpFileWriter minidump;
     minidump.InitializeFromSnapshot(&process_snapshot);
     AddUserExtensionStreams(
@@ -225,51 +289,6 @@ unsigned int CrashReportExceptionHandler::ExceptionHandlerServerException(
       }
 
       CopyFileContent(&file_reader, file_writer);
-    }
-
-    // Handle crash dialog BEFORE finalizing the crash report
-    // This prevents the upload thread from uploading before user makes a decision
-    if (enable_crash_dialog_) {
-      // Get the report ID before finishing (we need it for the dialog)
-      UUID report_id = new_report->ReportID();
-      
-      // Get process name for dialog
-      std::string process_name = "Unknown Process";
-
-      // Extract actual process name from process snapshot
-      ProcessSnapshotWin process_snapshot_for_name;
-      if (process_snapshot_for_name.Initialize(process,
-                                             ProcessSuspensionState::kRunning,
-                                             exception_information_address,
-                                             debug_critical_section_address)) {
-        const std::vector<const ModuleSnapshot*> modules = process_snapshot_for_name.Modules();
-        if (!modules.empty()) {
-          std::string module_name = modules[0]->Name();
-          // Extract just the filename from the full path
-          size_t last_slash = module_name.find_last_of("\\/");
-          if (last_slash != std::string::npos) {
-            process_name = module_name.substr(last_slash + 1);
-          } else {
-            process_name = module_name;
-          }
-        }
-      }
-
-      // Launch dialog and get response BEFORE finishing the report
-      DialogResponse dialog_response = LaunchDialogAndGetResponse(report_id, process_name);
-
-      // If user cancelled or dialog failed, don't finalize or upload
-      if (!dialog_response.should_upload) {
-        LOG(INFO) << "User declined crash report upload";
-        
-        // Don't call FinishedWritingCrashReport - the report will be cleaned up automatically
-        // when new_report goes out of scope
-        Metrics::ExceptionCaptureResult(Metrics::CaptureResult::kSuccess);
-        return termination_code;
-      }
-
-      // User approved - log the decision
-      LOG(INFO) << "User approved crash report upload";
     }
 
     // Now finalize the crash report (only reached if dialog approved or dialog disabled)
