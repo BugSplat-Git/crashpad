@@ -110,24 +110,37 @@ DialogResponse CrashReportExceptionHandler::LaunchDialogAndGetResponse(
       // Send request to dialog
       DWORD bytes_written;
       if (::WriteFile(pipe, &request, sizeof(request), &bytes_written, nullptr)) {
+        // Give the dialog a moment to process the request and show the dialog
+        Sleep(500);  // 500ms should be enough for the dialog to appear
+
         // Wait for response (with timeout)
         DWORD bytes_read;
         DWORD wait_result = WaitForSingleObject(pipe, 30000);  // 30 second timeout
 
-        if (wait_result == WAIT_OBJECT_0 &&
-            ::ReadFile(pipe, &response, sizeof(response), &bytes_read, nullptr)) {
-          // Successfully received response
+        if (wait_result == WAIT_OBJECT_0) {
+          if (!::ReadFile(pipe, &response, sizeof(response), &bytes_read, nullptr)) {
+            LOG(ERROR) << "Failed to read response from dialog";
+          }
+        } else {
+          LOG(ERROR) << "Timeout waiting for dialog response";
         }
+      } else {
+        LOG(ERROR) << "Failed to send request to dialog";
       }
+    } else {
+      LOG(ERROR) << "Dialog failed to connect to pipe";
     }
 
     // Clean up dialog process
     WaitForSingleObject(pi.hProcess, 5000);  // Wait up to 5 seconds
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+  } else {
+    LOG(ERROR) << "Failed to launch dialog process";
   }
 
   CloseHandle(pipe);
+
   return response;
 }
 
@@ -214,18 +227,12 @@ unsigned int CrashReportExceptionHandler::ExceptionHandlerServerException(
       CopyFileContent(&file_reader, file_writer);
     }
 
-    UUID uuid;
-    database_status =
-        database_->FinishedWritingCrashReport(std::move(new_report), &uuid);
-    if (database_status != CrashReportDatabase::kNoError) {
-      LOG(ERROR) << "FinishedWritingCrashReport failed";
-      Metrics::ExceptionCaptureResult(
-          Metrics::CaptureResult::kFinishedWritingCrashReportFailed);
-      return termination_code;
-    }
-
-    // NEW: Handle crash dialog if enabled
+    // Handle crash dialog BEFORE finalizing the crash report
+    // This prevents the upload thread from uploading before user makes a decision
     if (enable_crash_dialog_) {
+      // Get the report ID before finishing (we need it for the dialog)
+      UUID report_id = new_report->ReportID();
+      
       // Get process name for dialog
       std::string process_name = "Unknown Process";
 
@@ -248,24 +255,35 @@ unsigned int CrashReportExceptionHandler::ExceptionHandlerServerException(
         }
       }
 
-      // Launch dialog and get response
-      DialogResponse dialog_response = LaunchDialogAndGetResponse(uuid, process_name);
+      // Launch dialog and get response BEFORE finishing the report
+      DialogResponse dialog_response = LaunchDialogAndGetResponse(report_id, process_name);
 
-      // If user cancelled or dialog failed, don't upload
+      // If user cancelled or dialog failed, don't finalize or upload
       if (!dialog_response.should_upload) {
+        LOG(INFO) << "User declined crash report upload";
+        
+        // Don't call FinishedWritingCrashReport - the report will be cleaned up automatically
+        // when new_report goes out of scope
         Metrics::ExceptionCaptureResult(Metrics::CaptureResult::kSuccess);
         return termination_code;
       }
 
-      // Add user input to process annotations for upload
-      if (strlen(dialog_response.user_email) > 0) {
-        // Note: We need to modify process_annotations_ to include dialog data
-        // For now, we'll log it - in a full implementation, you'd modify the annotations
-        LOG(INFO) << "User email: " << dialog_response.user_email;
-        LOG(INFO) << "User description: " << dialog_response.user_description;
-      }
+      // User approved - log the decision
+      LOG(INFO) << "User approved crash report upload";
     }
 
+    // Now finalize the crash report (only reached if dialog approved or dialog disabled)
+    UUID uuid;
+    database_status =
+        database_->FinishedWritingCrashReport(std::move(new_report), &uuid);
+    if (database_status != CrashReportDatabase::kNoError) {
+      LOG(ERROR) << "FinishedWritingCrashReport failed";
+      Metrics::ExceptionCaptureResult(
+          Metrics::CaptureResult::kFinishedWritingCrashReportFailed);
+      return termination_code;
+    }
+
+    // Notify the upload thread that the report is ready
     if (upload_thread_) {
       upload_thread_->ReportPending(uuid);
     }
