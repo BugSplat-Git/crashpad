@@ -44,7 +44,7 @@ struct DialogRequest {
 };
 
 const wchar_t kDialogPipeName[] = L"\\\\.\\pipe\\CrashpadDialogPipe";
-const wchar_t kDialogAppName[] = L"CustomerCrashDialog.exe";
+const wchar_t kDialogAppName[] = L"BugSplatCrashpadReporter.exe";
 
 }  // namespace
 
